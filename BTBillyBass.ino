@@ -31,6 +31,17 @@ MX1508 mouthMotor(5, 3); // Sets up an MX1508 controlled motor on PWM pins 5 and
 
 int soundPin = A0; // Sound input
 
+// DollaTek MP3 Module Pins
+const int BUSY_PIN = A5;      // Connect to MP3 module's BUSY pin (D19)
+
+// Pins for MP3 song selection (match your actual wiring)
+// D2=IO0, D4=IO1, D7=IO2, D8=IO3, D10=IO4, D11=IO5, D12=IO6, D13=IO7
+const int mp3_io_pins[] = {2, 4, 7, 8, 10, 11, 12, 13};
+const int NUM_MP3_IO_PINS = 8;
+
+// Push Button to trigger song playback
+const int SONG_TRIGGER_BUTTON_PIN = A1; // Example pin for a button
+
 int silence = 12; // Threshold for "silence". Anything below this level is ignored.
 int bodySpeed = 0; // body motor speed initialized to 0
 int soundVolume = 0; // variable to hold the analog audio value
@@ -48,6 +59,27 @@ void setup() {
 //make sure both motor speeds are set to zero
   bodyMotor.setSpeed(0); 
   mouthMotor.setSpeed(0);
+  
+  pinMode(soundPin, INPUT); // Already there, good.
+
+  // Initialize MP3 BUSY Pin
+  pinMode(BUSY_PIN, INPUT);
+
+  // Initialize MP3 IO trigger pins to OUTPUT and default to HIGH (idle)
+  for (int i = 0; i < NUM_MP3_IO_PINS; i++) {
+    pinMode(mp3_io_pins[i], OUTPUT);
+    digitalWrite(mp3_io_pins[i], HIGH);
+  }
+
+  // Initialize Button Pin (assuming button connects pin to GND when pressed)
+  pinMode(SONG_TRIGGER_BUTTON_PIN, INPUT_PULLUP);
+
+  // Serial.begin(9600); // Already there, good.
+  // bodyMotor.setSpeed(0); // Already there
+  // mouthMotor.setSpeed(0); // Already there
+
+  Serial.println("Billy Bass Setup Complete."); // For feedback
+}
 
 //input mode for sound pin
   pinMode(soundPin, INPUT);
@@ -57,26 +89,91 @@ void setup() {
 
 void loop() {
   currentTime = millis(); //updates the time each time the loop is run
+  checkAndPlaySong()
   updateSoundInput(); //updates the volume level detected
   SMBillyBass(); //this is the switch/case statement to control the state of the fish
 }
 
+void checkAndPlaySong() {
+  // For DY-SV17F module:
+  // BUSY_PIN is LOW when playing.
+  // BUSY_PIN is HIGH when idle/stopped.
+
+  // Check if the player is currently idle
+  bool isPlayerIdle = (digitalRead(BUSY_PIN) == HIGH);
+
+  // Check if the song trigger button is pressed
+  if (digitalRead(SONG_TRIGGER_BUTTON_PIN) == LOW) { // Button is active LOW
+    if (isPlayerIdle) {
+      // Player is idle, so it's okay to play a new song.
+      // Play a random song from 1 to 8 (assuming 8 songs total and
+      // playMp3Song expects 1-indexed song numbers).
+      int randomSongNumber = random(1, 9); // Generates a number from 1 to 8
+      playMp3Song(randomSongNumber);
+
+      Serial.print("Button pressed, playing random song: ");
+      Serial.println(randomSongNumber);
+
+      delay(300); // Simple debounce for the button
+    } else {
+      // Player is currently busy (playing a song).
+      // Do nothing, or optionally provide feedback.
+      Serial.println("Button pressed, but MP3 player is currently busy. New song not started.");
+      // You might want a shorter delay here if you're giving feedback,
+      // or no delay if you want the button to be re-checked quickly.
+      // delay(50); // Optional shorter delay if busy
+    }
+  }
+}
+
+// --- Function to trigger an MP3 song (using IO0-IO7 mapping) ---
+void playMp3Song(int songNumber) { // songNumber from 1 to 8
+  if (songNumber < 1 || songNumber > NUM_MP3_IO_PINS) {
+    Serial.println("Error: Invalid song number.");
+    return;
+  }
+  Serial.print("Triggering MP3 Song: "); Serial.println(songNumber);
+
+  // 1. Ensure all IO lines are HIGH (idle state)
+  for (int i = 0; i < NUM_MP3_IO_PINS; i++) {
+    digitalWrite(mp3_io_pins[i], HIGH);
+  }
+
+  // 2. Select the Arduino pin corresponding to the MP3 module's IO line
+  //    (e.g., songNumber 1 is mp3_io_pins[0] which connects to IO0)
+  int pinToControlIndex = songNumber - 1;
+  digitalWrite(mp3_io_pins[pinToControlIndex], LOW); // Pull LOW to trigger
+
+  // 3. Keep the signal LOW for a short pulse duration
+  delay(100); // 50-100ms is usually sufficient
+
+  // 4. Return the IO line to HIGH
+  digitalWrite(mp3_io_pins[pinToControlIndex], HIGH);
+  Serial.println("MP3 trigger pulse sent.");
+}
+
 void SMBillyBass() {
+  bool isMp3Playing = (digitalRead(BUSY_PIN) == LOW);
+
   switch (fishState) {
     case 0: //START & WAITING
-      if (soundVolume > silence) { //if we detect audio input above the threshold
-        if (currentTime > mouthActionTime) { //and if we haven't yet scheduled a mouth movement
-          talking = true; //  set talking to true and schedule the mouth movement action
+      // Only react to soundVolume if the MP3 module is actually playing
+      if (isMp3Playing && soundVolume > silence) { // MODIFIED HERE
+        if (currentTime > mouthActionTime) {
+          talking = true; 
           mouthActionTime = currentTime + 100;
-          fishState = 1; // jump to a talking state
+          fishState = 1; 
         }
-      } else if (currentTime > mouthActionTime + 100) { //if we're beyond the scheduled talking time, halt the motors
+      } else if (currentTime > mouthActionTime + 100) {
         bodyMotor.halt();
         mouthMotor.halt();
+        // If MP3 is not playing, ensure 'talking' is false.
+        if (!isMp3Playing) talking = false; 
       }
-      if (currentTime - lastActionTime > 1500) { //if Billy hasn't done anything in a while, we need to show he's bored
-        lastActionTime = currentTime + floor(random(30, 60)) * 1000L; //you can adjust the numbers here to change how often he flaps
-        fishState = 2; //jump to a flapping state!
+      // Consider if the "boredom flap" should also only happen if not playing:
+      if (!isMp3Playing && !talking && (currentTime - lastActionTime > 15000)) { // MODIFIED BOREDOM CHECK (was 1500, maybe too short)
+        lastActionTime = currentTime + floor(random(30, 60)) * 1000L; 
+        fishState = 2; 
       }
       break;
 
